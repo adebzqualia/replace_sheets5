@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .config import UpdateConfig
 from .excel_session import ExcelSession, ExcelSessionError
+from .formula_links import rewrite_workbook_links
 from .protection import unprotected_worksheets
 
 
@@ -42,27 +43,50 @@ def _replacement_links(session, destination, previous_name):
 def _assert_reconnected(session, destination, previous_name):
     remaining = _replacement_links(session, destination, previous_name)
     if remaining:
+        # Excel can keep a Feuil1 entry in its link table after its formula
+        # references have been removed. Inspect actual formulas before deciding
+        # whether that entry indicates a broken calculation dependency.
+        aliases = {previous_name, "Feuil1", str(destination.Name)}
+        rewrite_workbook_links(session, destination, aliases, verify_only=True)
+    blocking = [link for link in remaining if ntpath.basename(str(link)).casefold() != "feuil1"]
+    if blocking:
         raise ExcelSessionError(
             "Temporary workbook links remain after reconnecting: "
-            + ", ".join(map(str, remaining))
+            + ", ".join(map(str, blocking))
             + ". The updated workbook was not published.")
+    return remaining
 
 
-def _reconnect(session, destination, previous, password):
-    """Make temporary/legacy references internal using Excel's native relinker."""
+def _reconnect(session, destination, previous, password, progress=None):
+    """Relink natively, then repair formulas if Excel leaves temporary links."""
     previous_name = str(previous.Name)
     matches = _replacement_links(session, destination, previous_name)
     if not matches:
-        return
+        return 0
     # ChangeLink can update any destination sheet, including protected summary
     # sheets and freshly copied source sheets. Workbook.Unprotect is not enough.
     with unprotected_worksheets(session, destination, password):
         for link in matches:
-            session.run(f"Reconnecting references from {link!r}", lambda link=link: destination.ChangeLink(
-                Name=link, NewName=str(destination.FullName), Type=1))
+            try:
+                session.run(f"Reconnecting references from {link!r}", lambda link=link: destination.ChangeLink(
+                    Name=link, NewName=str(destination.FullName), Type=1))
+            except ExcelSessionError:
+                if ntpath.basename(str(link)).casefold() != "feuil1":
+                    raise
+                # Some Excel versions cannot resolve this legacy placeholder
+                # as a workbook. The direct repair below does not open it.
+        repaired = 0
+        if _replacement_links(session, destination, previous_name):
+            if progress:
+                progress("Repairing remaining temporary links directly in formulas...")
+            repaired = rewrite_workbook_links(
+                session, destination, {previous_name, "Feuil1", str(destination.Name)}, progress=progress)
+            if progress:
+                progress(f"Repaired {repaired} formula/name/chart references.")
         # A successful COM call is not proof that Excel removed the link.
         # Never publish a workbook still dependent on discarded scratch tabs.
         _assert_reconnected(session, destination, previous_name)
+        return repaired
 
 
 def _replace_country(session, destination, previous, update, password, progress):
@@ -88,10 +112,11 @@ def _replace_country(session, destination, previous, update, password, progress)
             progress(f"Replacing {update.country}: {', '.join(targets)}")
         session.move_after(_selected(destination, targets), previous.Sheets(1))
         session.copy_after(_selected(source, targets), destination.Sheets(destination.Sheets.Count))
-        _reconnect(session, destination, previous, password)
+        repaired = _reconnect(session, destination, previous, password, progress)
         if progress:
             for sheet in update.sheets:
                 progress(f"Replaced {update.country}: {sheet.source_name} -> {sheet.target_name}")
+        return repaired
     finally:
         session.close_workbook(source)
 
@@ -121,8 +146,10 @@ def refresh(config: UpdateConfig, plan, progress=None):
                 previous = session.track_workbook(session.call(lambda: session.app.Workbooks.Add(-4167)))
                 session.call(lambda: previous.SaveAs(
                     Filename=str(Path(scratch) / "previous_sheets.xlsx"), FileFormat=51))
+                repaired_references = 0
                 for update in plan:
-                    _replace_country(session, destination, previous, update, config.sheet_password, progress)
+                    repaired_references += _replace_country(
+                        session, destination, previous, update, config.sheet_password, progress)
                 last = anchor
                 for name in order:
                     worksheet = destination.Sheets(name)
@@ -142,7 +169,7 @@ def refresh(config: UpdateConfig, plan, progress=None):
                 session.run("Saving updated workbook", lambda: destination.Save())
                 # Saving can materialize cached link entries. Check again before
                 # closing/publishing; the scratch COM object is already closed.
-                _assert_reconnected(session, destination, previous_name)
+                cached_links = _assert_reconnected(session, destination, previous_name)
                 session.close_workbook(destination)
         if output.exists() and not config.overwrite_output:
             raise FileExistsError(f"Output already exists: {output}")
@@ -151,8 +178,13 @@ def refresh(config: UpdateConfig, plan, progress=None):
         result = {
             "output_workbook": str(output), "report_file": str(report),
             "countries": [update.country for update in plan],
+            "repaired_formula_references": repaired_references,
             "warnings": ["FILLING_RATE, VALIDATION and PPT_VALIDATION remain generation snapshots."],
         }
+        if cached_links:
+            result["warnings"].append(
+                "Excel still lists Feuil1 in its workbook link metadata; no remaining references "
+                "were found in worksheet formulas, defined names or chart series.")
         report.write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result
     except BaseException as primary:
