@@ -1,0 +1,49 @@
+# Paths are relative to this configuration file's directory.
+version: 1
+final_workbook: ../data2/Consolidated_with_PPT_16-09_18h.xlsx
+output_workbook: ../data2/output/Consolidated_with_PPT_16-09_18h_UPDATED.xlsx
+overwrite_output: false
+# Validate real labels; exact empty strings and "-" are data placeholders.
+check_text_layout: false
+sheet_password: "a"
+
+# Original consolidation names and prefixes, with explicit Italy/France aliases.
+# Use one name per destination prefix in updates; aliases cannot both be updated.
+country_prefixes:
+  PFF: PFF
+  Belgium: Belgium
+  Netherland: Netherland
+  Findomestic: Italy
+  "Spain (Ctlm Espana + JLR Spain + XFera)": Spain
+  Portugal: Portugal
+  Germany: Germany
+  UK: UK
+  Poland: Poland
+  RCS: RCS
+  "Crédits Modernes": CM
+  Germany-Secured_CORE: GER-SEC
+  Italy: Italy
+  France: PFF
+
+# Exact country-workbook source name -> consolidated worksheet suffix.
+sheet_mapping:
+  ID Card: ID Card
+  OBS KPI: OBS KPI
+  FTE: FTE
+  CVC: CVC
+  GRANTING 2027-2030: GRANTING
+  CUSTOMER SERVICES 2027-2030: CS
+  CORE 2027-2030: CORE
+  NPL SALES: NPL SALES
+  KPI: KPI
+  NPL SALES 2: NPL SALES2
+  CREDIT BUREAU: CREDIT BUREAU
+  MBS (OPEX): MBS (OPEX)
+  PROCUREMENT: PROCUREMENT
+
+# Examples: replace paths and selections with the corrected submissions.
+# Omit sheets for an update to select all 13 entries above.
+updates:
+  - country: UK
+    file: ../data2/Copy of POPS 2027 Template - UK - VERSION 3.xlsx
+    sheets: [ID Card, OBS KPI, FTE, CVC, GRANTING 2027-2030, CUSTOMER SERVICES 2027-2030, CORE 2027-2030, NPL SALES, KPI, NPL SALES 2, CREDIT BUREAU, MBS (OPEX), PROCUREMENT]
